@@ -11,60 +11,62 @@ pub fn stmt_list(p: &mut Parser, terminator: Sig) -> bool {
 }
 
 pub fn statement(p: &mut Parser) -> bool {
-    if p.at(T![Ident]) {
-        return assignment_or_call(p);
-    }
+    p.with_recursion(false, |p| {
+        if p.at(T![Ident]) {
+            return assignment_or_call(p);
+        }
 
-    match p.current() {
-        Some(T![Semicolon]) => {
-            let m = p.start();
-            p.bump();
-            m.complete(p, NodeKind::EmptyStmt);
-        }
-        Some(T![KwReturn]) => return_stmt(p),
-        Some(T![KwIf]) => if_stmt(p),
-        Some(T![KwWhile]) => while_stmt(p),
-        Some(T![KwFor]) => for_stmt(p),
-        Some(T![KwTry]) => try_stmt(p),
-        Some(T![KwRaise]) => raise_stmt(p),
-        Some(T![KwBreak]) => {
-            let m = p.start();
-            p.bump();
-            p.eat(T![Semicolon]);
-            m.complete(p, NodeKind::BreakStmt);
-        }
-        Some(T![KwContinue]) => {
-            let m = p.start();
-            p.bump();
-            p.eat(T![Semicolon]);
-            m.complete(p, NodeKind::ContinueStmt);
-        }
-        Some(T![KwGoto]) => goto_stmt(p),
-        Some(T![Tilde]) => label_stmt(p),
-        Some(T![KwExecute]) => execute_stmt(p),
-        Some(T![KwAddHandler]) => add_handler_stmt(p),
-        Some(T![KwRemoveHandler]) => remove_handler_stmt(p),
-        Some(T![KwVar]) => super::items::var_declaration(p),
-        Some(T![PreRegion]) => super::preprocessor_region(p),
-        Some(T![PreEndRegion]) => super::preprocessor_end_region(p),
-        Some(T![PreIf]) => super::preprocessor_if(p),
-        Some(T![PreDelete]) => super::preprocessor_delete(p),
-        Some(T![PreInsert]) => super::preprocessor_insert(p),
-        // The closer of an insertion that tore apart the statement before this
-        // one, when the statement ended inside it — a literal whose closing
-        // line was inserted takes its `;` along.
-        Some(T![PreEndInsert]) if p.inline_insert_open() => p.bump_inline_insert_marker(),
-        _ => {
-            if p.current().is_some() {
+        match p.current() {
+            Some(T![Semicolon]) => {
                 let m = p.start();
-                expressions::expression(p);
-                m.complete(p, NodeKind::CallStmt);
+                p.bump();
+                m.complete(p, NodeKind::EmptyStmt);
+            }
+            Some(T![KwReturn]) => return_stmt(p),
+            Some(T![KwIf]) => if_stmt(p),
+            Some(T![KwWhile]) => while_stmt(p),
+            Some(T![KwFor]) => for_stmt(p),
+            Some(T![KwTry]) => try_stmt(p),
+            Some(T![KwRaise]) => raise_stmt(p),
+            Some(T![KwBreak]) => {
+                let m = p.start();
+                p.bump();
                 p.eat(T![Semicolon]);
+                m.complete(p, NodeKind::BreakStmt);
+            }
+            Some(T![KwContinue]) => {
+                let m = p.start();
+                p.bump();
+                p.eat(T![Semicolon]);
+                m.complete(p, NodeKind::ContinueStmt);
+            }
+            Some(T![KwGoto]) => goto_stmt(p),
+            Some(T![Tilde]) => label_stmt(p),
+            Some(T![KwExecute]) => execute_stmt(p),
+            Some(T![KwAddHandler]) => add_handler_stmt(p),
+            Some(T![KwRemoveHandler]) => remove_handler_stmt(p),
+            Some(T![KwVar]) => super::items::var_declaration(p),
+            Some(T![PreRegion]) => super::preprocessor_region(p),
+            Some(T![PreEndRegion]) => super::preprocessor_end_region(p),
+            Some(T![PreIf]) => super::preprocessor_if(p),
+            Some(T![PreDelete]) => super::preprocessor_delete(p),
+            Some(T![PreInsert]) => super::preprocessor_insert(p),
+            // The closer of an insertion that tore apart the statement before this
+            // one, when the statement ended inside it — a literal whose closing
+            // line was inserted takes its `;` along.
+            Some(T![PreEndInsert]) if p.inline_insert_open() => p.bump_inline_insert_marker(),
+            _ => {
+                if p.current().is_some() {
+                    let m = p.start();
+                    expressions::expression(p);
+                    m.complete(p, NodeKind::CallStmt);
+                    p.eat(T![Semicolon]);
+                }
             }
         }
-    }
 
-    false
+        false
+    })
 }
 
 /// Закрыватель после списка, восстановление в котором съело похожее на него слово.

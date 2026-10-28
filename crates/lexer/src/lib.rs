@@ -383,7 +383,7 @@ pub enum TokenKind {
     #[regex(r"[_\p{L}][_\p{L}0-9]*", priority = 1)]
     Ident,
 
-    #[regex(r"//[^\n]*")]
+    #[regex(r"//[^\n]*", allow_greedy = true)]
     Comment,
 
     #[token("\n")]

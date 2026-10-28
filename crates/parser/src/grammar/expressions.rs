@@ -25,7 +25,7 @@ const CROSS_LINE_PROPERTY_NAME_TOKENS: TokenSet = TokenSet::new(&[
 ]);
 
 pub fn expression(p: &mut Parser) {
-    or_expr(p);
+    p.with_recursion((), or_expr);
 }
 
 pub fn postfix_expression_for_assignment(p: &mut Parser) -> bool {
@@ -67,14 +67,18 @@ fn and_expr(p: &mut Parser) {
 }
 
 fn not_expr(p: &mut Parser) {
-    inline_directives(p);
-    if p.at(T![KwNot]) {
-        let m = p.start();
+    let mut markers = Vec::new();
+    loop {
+        inline_directives(p);
+        if !p.at(T![KwNot]) {
+            break;
+        }
+        markers.push(p.start());
         p.bump();
-        not_expr(p);
-        m.complete(p, NodeKind::UnaryExpr);
-    } else {
-        comparison_expr(p);
+    }
+    comparison_expr(p);
+    for marker in markers.into_iter().rev() {
+        marker.complete(p, NodeKind::UnaryExpr);
     }
 }
 
@@ -145,14 +149,14 @@ fn multiplicative_expr(p: &mut Parser) {
 ///
 /// Provenance: `docs/legal/bsl-clean-room-slice-b3.md`, finding D9.
 fn unary_expr(p: &mut Parser) {
-    inline_directives(p);
-    match p.current() {
-        Some(T![Plus]) | Some(T![Minus]) => {
-            p.bump();
-            unary_expr(p);
+    loop {
+        inline_directives(p);
+        if !matches!(p.current(), Some(T![Plus]) | Some(T![Minus])) {
+            break;
         }
-        _ => postfix_expr(p),
+        p.bump();
     }
+    postfix_expr(p);
 }
 
 fn postfix_expr(p: &mut Parser) {
