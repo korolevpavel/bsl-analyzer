@@ -19,6 +19,7 @@ pub struct Parser<'a> {
     pos: usize,
     events: Vec<Event>,
     iteration_count: usize,
+    recursion_depth: usize,
     recent_positions: Vec<usize>,
     paren_depth: u32,
     brace_depth: u32,
@@ -36,6 +37,7 @@ impl<'a> Parser<'a> {
             pos: 0,
             events: Vec::new(),
             iteration_count: 0,
+            recursion_depth: 0,
             recent_positions: Vec::with_capacity(POSITION_HISTORY_SIZE),
             paren_depth: 0,
             brace_depth: 0,
@@ -45,6 +47,29 @@ impl<'a> Parser<'a> {
             open_inline_inserts: 0,
             closed_inserts: std::cell::OnceCell::new(),
         }
+    }
+
+    /// Bound live grammar frames, not source length or token count. On exhaustion
+    /// retain the remaining tokens in the tree and report the exact stopped location.
+    pub(crate) fn with_recursion<T>(
+        &mut self,
+        fallback: T,
+        parse: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        const MAX_GRAMMAR_DEPTH: usize = 64;
+        if self.recursion_depth == MAX_GRAMMAR_DEPTH {
+            self.error_custom_no_bump(
+                "parser nesting limit reached; remaining source was not analyzed",
+            );
+            while !self.at_end() {
+                self.bump();
+            }
+            return fallback;
+        }
+        self.recursion_depth += 1;
+        let result = parse(self);
+        self.recursion_depth -= 1;
+        result
     }
 
     pub fn finish(self) -> Vec<Event> {

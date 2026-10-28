@@ -39,7 +39,7 @@ pub enum SdblTokenKind {
     #[token("\n")]
     Newline,
 
-    #[regex(r"//[^\n]*")]
+    #[regex(r"//[^\n]*", allow_greedy = true)]
     Comment,
 
     #[token("(")]

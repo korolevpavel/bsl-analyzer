@@ -1,0 +1,32 @@
+name: Parser stack safety
+
+on:
+  pull_request:
+    branches: [unica-0.2.86]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parser:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Preserve committed fixture bytes on every OS
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install pinned Rust
+        shell: bash
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component clippy --component rustfmt
+      - name: Format
+        run: cargo +1.95.0 fmt --all -- --check
+      - name: Lexer, syntax, and parser regressions
+        run: cargo +1.95.0 test --locked -p lexer -p syntax -p parser --lib --tests
+      - name: Clippy
+        run: cargo +1.95.0 clippy --locked -p lexer -p syntax -p parser --all-targets -- -D warnings

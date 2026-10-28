@@ -282,45 +282,47 @@ fn at_preproc_closer(p: &Parser) -> bool {
 /// will not consume an enclosing closer, so a region waiting only for
 /// `#КонецЕсли` would wait for a token nothing reaches.
 fn preproc_content(p: &mut Parser) {
-    while !p.at_end() && !at_preproc_closer(p) && !p.at_enclosing_boundary() {
-        p.check_iteration_limit();
-        if p.at_end() || at_preproc_closer(p) || p.at_enclosing_boundary() {
-            break;
-        }
+    p.with_recursion((), |p| {
+        while !p.at_end() && !at_preproc_closer(p) && !p.at_enclosing_boundary() {
+            p.check_iteration_limit();
+            if p.at_end() || at_preproc_closer(p) || p.at_enclosing_boundary() {
+                break;
+            }
 
-        match p.current() {
-            Some(T![KwAsync]) => match p.nth(1) {
+            match p.current() {
+                Some(T![KwAsync]) => match p.nth(1) {
+                    Some(T![KwProcedure]) => items::procedure_def(p),
+                    Some(T![KwFunction]) => items::function_def(p),
+                    _ => p.error_unexpected(),
+                },
                 Some(T![KwProcedure]) => items::procedure_def(p),
                 Some(T![KwFunction]) => items::function_def(p),
-                _ => p.error_unexpected(),
-            },
-            Some(T![KwProcedure]) => items::procedure_def(p),
-            Some(T![KwFunction]) => items::function_def(p),
-            Some(T![KwVar]) => items::var_declaration(p),
-            Some(T![PreRegion]) => preprocessor_region(p),
-            Some(T![PreEndRegion]) => preprocessor_end_region(p),
-            Some(T![PreIf]) => preprocessor_if(p),
-            Some(T![PreDelete]) => preprocessor_delete(p),
-            Some(T![PreInsert]) => preprocessor_insert(p),
-            Some(T![AnnAtClient])
-            | Some(T![AnnAtServer])
-            | Some(T![AnnAtServerNoContext])
-            | Some(T![AnnAtClientAtServer])
-            | Some(T![AnnAtClientAtServerNoContext]) => {
-                annotated_item(p);
-            }
-            Some(T![AnnBefore])
-            | Some(T![AnnAfter])
-            | Some(T![AnnAround])
-            | Some(T![AnnChangeAndValidate])
-            | Some(T![AnnCustom]) => {
-                annotated_item(p);
-            }
-            _ => {
-                statements::statement(p);
+                Some(T![KwVar]) => items::var_declaration(p),
+                Some(T![PreRegion]) => preprocessor_region(p),
+                Some(T![PreEndRegion]) => preprocessor_end_region(p),
+                Some(T![PreIf]) => preprocessor_if(p),
+                Some(T![PreDelete]) => preprocessor_delete(p),
+                Some(T![PreInsert]) => preprocessor_insert(p),
+                Some(T![AnnAtClient])
+                | Some(T![AnnAtServer])
+                | Some(T![AnnAtServerNoContext])
+                | Some(T![AnnAtClientAtServer])
+                | Some(T![AnnAtClientAtServerNoContext]) => {
+                    annotated_item(p);
+                }
+                Some(T![AnnBefore])
+                | Some(T![AnnAfter])
+                | Some(T![AnnAround])
+                | Some(T![AnnChangeAndValidate])
+                | Some(T![AnnCustom]) => {
+                    annotated_item(p);
+                }
+                _ => {
+                    statements::statement(p);
+                }
             }
         }
-    }
+    })
 }
 
 fn preproc_expression(p: &mut Parser) {
@@ -355,29 +357,31 @@ fn preproc_logical_expression(p: &mut Parser) {
 ///
 /// Provenance: `docs/legal/bsl-clean-room-slice-b3.md`, finding D3.
 fn preproc_logical_operand(p: &mut Parser) {
-    let m = p.start();
+    p.with_recursion((), |p| {
+        let m = p.start();
 
-    if p.at(T![LParen]) {
-        p.bump();
+        if p.at(T![LParen]) {
+            p.bump();
 
-        p.within_boundary(at_closing_paren, |p| {
-            if p.at(T![KwNot]) {
-                p.bump();
-                preproc_logical_operand(p);
-            } else {
-                preproc_logical_expression(p);
-            }
-        });
+            p.within_boundary(at_closing_paren, |p| {
+                if p.at(T![KwNot]) {
+                    p.bump();
+                    preproc_logical_operand(p);
+                } else {
+                    preproc_logical_expression(p);
+                }
+            });
 
-        p.expect(T![RParen]);
-    } else if p.at(T![KwNot]) {
-        p.bump();
-        preproc_logical_operand(p);
-    } else {
-        preproc_symbol(p);
-    }
+            p.expect(T![RParen]);
+        } else if p.at(T![KwNot]) {
+            p.bump();
+            preproc_logical_operand(p);
+        } else {
+            preproc_symbol(p);
+        }
 
-    m.complete(p, NodeKind::PreLogicalOperand);
+        m.complete(p, NodeKind::PreLogicalOperand);
+    })
 }
 
 pub(super) fn preprocessor_delete(p: &mut Parser) {

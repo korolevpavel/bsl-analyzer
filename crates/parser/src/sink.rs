@@ -99,6 +99,9 @@ impl<'t, 'cache> Sink<'t, 'cache> {
         let mut skip = vec![false; events.len()];
 
         for i in 0..events.len() {
+            if skip[i] {
+                continue;
+            }
             if let Event::Start { forward_parent: Some(fwd), .. } = &events[i] {
                 let mut idx = i + fwd;
                 while let Event::Start { forward_parent, .. } = &events[idx] {
@@ -110,6 +113,10 @@ impl<'t, 'cache> Sink<'t, 'cache> {
                     }
                 }
             }
+        }
+
+        if let Some(range) = self.excessive_tree_depth(&events, &skip) {
+            return self.flat_error_tree(events, range);
         }
 
         for i in 0..events.len() {
@@ -195,6 +202,105 @@ impl<'t, 'cache> Sink<'t, 'cache> {
             self.builder.error(range, err);
         }
 
+        self.builder
+    }
+
+    /// Forward parents can create deep trees without recursive grammar calls.
+    /// Inspect the expanded event structure before giving any nodes to Rowan:
+    /// its node-cache hashing recursively walks descendants.
+    fn excessive_tree_depth(&self, events: &[Event], skip: &[bool]) -> Option<TextRange> {
+        const MAX_TREE_DEPTH: usize = 512;
+        let mut depth = 0usize;
+        let mut token_pos = 0usize;
+        for (i, event) in events.iter().enumerate() {
+            match event {
+                Event::Start { .. } if !skip[i] => {
+                    let mut next = Some(i);
+                    while let Some(index) = next {
+                        let Event::Start { forward_parent, .. } = events[index] else {
+                            unreachable!()
+                        };
+                        depth += 1;
+                        if depth > MAX_TREE_DEPTH {
+                            let token =
+                                self.tokens[token_pos..].iter().find(|t| !t.kind.is_trivia());
+                            let offset = token.map_or_else(
+                                || self.tokens.last().map_or(0, |t| t.offset + t.text.len()),
+                                |t| t.offset,
+                            );
+                            return Some(TextRange::at(
+                                TextSize::from(offset as u32),
+                                TextSize::from(token.map_or(0, |t| t.text.len()) as u32),
+                            ));
+                        }
+                        next = forward_parent.map(|offset| index + offset);
+                    }
+                }
+                Event::Finish => depth -= 1,
+                Event::Token { .. } => {
+                    while self.tokens.get(token_pos).is_some_and(|t| t.kind.is_trivia()) {
+                        token_pos += 1;
+                    }
+                    token_pos += usize::from(token_pos < self.tokens.len());
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn flat_error_tree(
+        mut self,
+        events: Vec<Event>,
+        range: TextRange,
+    ) -> SyntaxTreeBuilder<'cache> {
+        let root_kind = events
+            .iter()
+            .find_map(|event| match event {
+                Event::Start { kind, .. } => Some(node_kind_to_syntax(*kind)),
+                _ => None,
+            })
+            .unwrap_or(SyntaxKind::SOURCE_FILE);
+        self.builder.start_node(root_kind);
+        // Trivia at either edge belongs to the root even in recovery trees.
+        while let Some(token) =
+            self.tokens.get(self.token_pos).filter(|token| token.kind.is_trivia())
+        {
+            self.builder.token(token_kind_to_syntax(token.kind), token.text.as_str());
+            self.token_pos += 1;
+        }
+        self.builder.start_node(SyntaxKind::ERROR);
+        self.open_nodes = 2;
+        for event in events {
+            match event {
+                Event::Token { kind } => self.token(kind),
+                Event::Error(err) => {
+                    let range = self.compute_error_range(&err, None);
+                    self.errors.push((range, err));
+                }
+                Event::ErrorWithSpan { start_token, err } => {
+                    let range = self.compute_error_range(&err, Some(start_token));
+                    self.errors.push((range, err));
+                }
+                _ => {}
+            }
+        }
+        self.flush_trivia();
+        self.builder.finish_node();
+        self.open_nodes = 1;
+        self.take_the_tail();
+        self.flush_trivia();
+        self.builder.finish_node();
+        for (range, err) in self.errors {
+            self.builder.error(range, err);
+        }
+        self.builder.error(
+            range,
+            ParseError::Custom {
+                message: "syntax tree depth limit reached; structure was not constructed",
+                recovery: RecoveryKind::RecoverySpan,
+            },
+        );
         self.builder
     }
 
@@ -755,5 +861,56 @@ mod tests {
 
         eprintln!("=== Final syntax tree ===");
         eprintln!("{:#?}", parse.syntax_node());
+    }
+}
+
+#[cfg(test)]
+mod depth_tests {
+    use super::*;
+    use crate::event::NodeKind;
+
+    #[test]
+    fn tree_depth_boundary_preserves_source_and_existing_diagnostics() {
+        let tokens = lexer::tokenize("  а // tail");
+        for depth in [511, 512, 513] {
+            let mut events =
+                vec![Event::Start { kind: NodeKind::SourceFile, forward_parent: None }];
+            events.extend(
+                (1..depth).map(|_| Event::Start { kind: NodeKind::Expr, forward_parent: None }),
+            );
+            events.push(Event::Token { kind: lexer::TokenKind::Ident });
+            events.push(Event::Error(ParseError::Custom {
+                message: "existing diagnostic",
+                recovery: RecoveryKind::BumpToken,
+            }));
+            events.extend((0..depth).map(|_| Event::Finish));
+            let parsed = Sink::new(&tokens).finish(events).finish();
+            assert_eq!(parsed.syntax_node().text().to_string(), "  а // tail");
+            assert!(parsed.errors().iter().any(|e| e.message().contains("Existing diagnostic")));
+            assert_eq!(
+                parsed.errors().iter().any(|e| e.message().contains("tree depth limit")),
+                depth > 512
+            );
+            assert_eq!(
+                parsed.syntax_node().descendants().count(),
+                if depth > 512 { 2 } else { depth }
+            );
+            let existing = parsed
+                .errors()
+                .iter()
+                .find(|error| error.message().contains("Existing diagnostic"))
+                .unwrap();
+            assert_eq!(existing.range(), TextRange::new(2.into(), 4.into()));
+            if depth > 512 {
+                let error = parsed
+                    .syntax_node()
+                    .children()
+                    .find(|node| node.kind() == SyntaxKind::ERROR)
+                    .unwrap();
+                assert!(!error.first_token().unwrap().kind().is_trivia());
+                assert!(!error.last_token().unwrap().kind().is_trivia());
+                assert_eq!(error.text().to_string(), "а");
+            }
+        }
     }
 }
